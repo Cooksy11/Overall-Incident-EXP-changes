@@ -8,14 +8,31 @@ from io import BytesIO, StringIO
 from matplotlib.backends.backend_pdf import PdfPages
 import requests
 
-# Load and preprocess data from Google Sheets
+
+
+@st.cache_data
 def load_data():
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTFcAq9JNJsfPhiPe3sdaEipD1jofgrCNozbcld55JzDguXCxVpFbM0KwKd5txhLh4FLlBvFy43WqAX/pub?output=csv"
+    
     response = requests.get(url)
     response.raise_for_status()
     data = StringIO(response.text)
+    
     df = pd.read_csv(data)
-    df['EVENT_START_TIMESTAMP'] = pd.to_datetime(df['EVENT_START_TIMESTAMP'], format='%d/%m/%Y %H:%M:%S')
+
+    # Safely convert timestamps — ignore bad formats
+    df['EVENT_START_TIMESTAMP'] = pd.to_datetime(
+        df['EVENT_START_TIMESTAMP'],
+        errors='coerce',
+        dayfirst=True
+    )
+
+    # Optional: show invalid rows for debugging
+    # st.write("⚠️ Invalid timestamps dropped:", df[df['EVENT_START_TIMESTAMP'].isna()])
+
+    # Drop rows where date parsing failed
+    df = df.dropna(subset=['EVENT_START_TIMESTAMP'])
+
     return df
 
 df = load_data()
