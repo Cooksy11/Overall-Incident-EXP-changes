@@ -24,16 +24,25 @@ df = load_data()
 st.sidebar.header("Filters")
 
 exp_types = st.sidebar.multiselect("Select Expectancy Types (up to 6)", [
-    'Home Goals', 'Away Goals', 'Total Goals',
-    'Home Corners', 'Away Corners', 'Total Corners'
-], default=['Home Goals'])
+    'Favourite Goals', 'Underdog Goals', 'Total Goals',
+    'Favourite Corners', 'Underdog Corners', 'Total Corners'
+], default=['Favourite Goals'])
 
 min_date = df['EVENT_START_TIMESTAMP'].min().date()
 max_date = df['EVENT_START_TIMESTAMP'].max().date()
 start_date, end_date = st.sidebar.date_input("Select Date Range", [min_date, max_date])
 df = df[(df['EVENT_START_TIMESTAMP'].dt.date >= start_date) & (df['EVENT_START_TIMESTAMP'].dt.date <= end_date)]
 
-# --- Favouritism Filter ---
+fav_options = ['Strong Favourite', 'Medium Favourite', 'Slight Favourite']
+scoreline_options = ['Favourite Winning', 'Scores Level', 'Underdog Winning']
+
+fav_filter = st.sidebar.multiselect("Goal Favouritism Level", fav_options, default=fav_options)
+scoreline_filter = st.sidebar.multiselect("Goal Scoreline Filter", scoreline_options, default=scoreline_options)
+
+st.markdown("*Favourites are determined using Goal Expectancy at minute 0")
+
+# --- Functions ---
+
 def classify_favouritism(row):
     diff = abs(row['GOAL_EXP_HOME'] - row['GOAL_EXP_AWAY'])
     if diff > 1:
@@ -43,7 +52,6 @@ def classify_favouritism(row):
     else:
         return 'Slight Favourite'
 
-# --- Scoreline Filter ---
 def classify_scoreline_simple(row):
     fav = 'Home' if row['GOAL_EXP_HOME'] > row['GOAL_EXP_AWAY'] else 'Away'
     score_diff = row['GOALS_HOME'] - row['GOALS_AWAY']
@@ -55,63 +63,55 @@ def classify_scoreline_simple(row):
     else:
         return "Underdog Winning"
 
-fav_options = ['Strong Favourite', 'Medium Favourite', 'Slight Favourite']
-scoreline_options = ['Favourite Winning', 'Scores Level', 'Underdog Winning']
+def compute_exp_by_role(df, role='Favourite', target='Goals'):
+    col_map = {
+        'Goals': ('GOAL_EXP_HOME', 'GOAL_EXP_AWAY'),
+        'Corners': ('CORNERS_EXP_HOME', 'CORNERS_EXP_AWAY')
+    }
 
-fav_filter = st.sidebar.multiselect("Goal Favouritism Level", fav_options, default=fav_options)
-scoreline_filter = st.sidebar.multiselect("Goal Scoreline Filter", scoreline_options, default=scoreline_options)
+    home_col, away_col = col_map[target]
+    change_data = []
 
-# --- Helper ---
-exp_map = {
-    'Home Goals': 'GOAL_EXP_HOME',
-    'Away Goals': 'GOAL_EXP_AWAY',
-    'Total Goals': ['GOAL_EXP_HOME', 'GOAL_EXP_AWAY'],
-    'Home Corners': 'CORNERS_EXP_HOME',
-    'Away Corners': 'CORNERS_EXP_AWAY',
-    'Total Corners': ['CORNERS_EXP_HOME', 'CORNERS_EXP_AWAY']
-}
-
-def compute_changes(df, home_col, away_col, label):
-    rows = []
     for event_id, group in df.groupby('SRC_EVENT_ID'):
         group = group.sort_values('MINUTES')
-        base_home = group.iloc[0][home_col]
-        base_away = group.iloc[0][away_col]
-        prev_home = base_home
-        prev_away = base_away
+        base_row = group[group['MINUTES'] == 0].iloc[0]
+
+        home_exp_0 = base_row['GOAL_EXP_HOME']
+        away_exp_0 = base_row['GOAL_EXP_AWAY']
+        home_is_fav = home_exp_0 > away_exp_0
+        if home_exp_0 == away_exp_0:
+            continue  # skip events with no clear favourite
+
+        base_val = base_row[home_col if (role == 'Favourite' and home_is_fav) or (role == 'Underdog' and not home_is_fav) else away_col]
+        prev_val = base_val
 
         for _, row in group.iterrows():
             minute = row['MINUTES']
-            home_exp = row[home_col]
-            away_exp = row[away_col]
-            home_change, away_change, total_change = None, None, None
+            team_val = row[home_col if (role == 'Favourite' and home_is_fav) or (role == 'Underdog' and not home_is_fav) else away_col]
+            if team_val != prev_val:
+                overall_change = team_val - base_val
+                prev_val = team_val
 
-            if home_exp != prev_home:
-                home_change = home_exp - base_home
-                prev_home = home_exp
-            if away_exp != prev_away:
-                away_change = away_exp - base_away
-                prev_away = away_exp
-            if home_change is not None or away_change is not None:
-                total_change = (home_exp - base_home) + (away_exp - base_away)
-                rows.append({
+                change_data.append({
                     'MINUTES': minute,
-                    'Change': total_change if 'Total' in label else home_change if 'Home' in label else away_change,
-                    'EVENT_START_TIMESTAMP': row['EVENT_START_TIMESTAMP'],
+                    'Change': overall_change,
                     'GOAL_EXP_HOME': row['GOAL_EXP_HOME'],
                     'GOAL_EXP_AWAY': row['GOAL_EXP_AWAY'],
                     'GOALS_HOME': row['GOALS_HOME'],
                     'GOALS_AWAY': row['GOALS_AWAY'],
+                    'EVENT_START_TIMESTAMP': row['EVENT_START_TIMESTAMP'],
                     'SRC_EVENT_ID': event_id
                 })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(change_data)
 
-# --- Layout: 2 columns x N rows ---
+# --- Graph Generation ---
+plots = []
 cols = st.columns(2) if len(exp_types) > 1 else [st]
 
 for i, exp_type in enumerate(exp_types[:6]):
-    home_col, away_col = exp_map[exp_type] if isinstance(exp_map[exp_type], list) else (exp_map[exp_type], 'GOAL_EXP_AWAY' if 'HOME' in exp_map[exp_type] else 'GOAL_EXP_HOME')
-    df_changes = compute_changes(df, home_col, away_col, exp_type)
+    role = 'Favourite' if 'Favourite' in exp_type else 'Underdog'
+    market = 'Goals' if 'Goals' in exp_type else 'Corners'
+    df_changes = compute_exp_by_role(df, role=role, target=market)
 
     df_changes['Favouritism'] = df_changes.apply(classify_favouritism, axis=1)
     df_changes['Scoreline'] = df_changes.apply(classify_scoreline_simple, axis=1)
@@ -126,7 +126,7 @@ for i, exp_type in enumerate(exp_types[:6]):
 
     avg_change = df_changes.groupby('Time Band')['Change'].mean()
 
-    # --- Plot ---
+    # Plot
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(avg_change.index, avg_change.values, marker='o', color='black')
     ax.set_title(f"{exp_type} Expectancy Change")
@@ -135,8 +135,22 @@ for i, exp_type in enumerate(exp_types[:6]):
     ax.grid(True)
     fig.tight_layout()
 
-    # Render plot
+    plots.append(fig)
     cols[i % 2].pyplot(fig)
 
-# Optional PDF Export – Just one chart if needed
-# If you want all charts exported, let me know and I’ll wire that in too
+# --- Export to PDF Button ---
+def export_all_to_pdf(figures):
+    buffer = BytesIO()
+    with PdfPages(buffer) as pdf:
+        for fig in figures:
+            pdf.savefig(fig, bbox_inches='tight')
+    buffer.seek(0)
+    return buffer
+
+if plots:
+    st.download_button(
+        label="Download All Charts as PDF",
+        data=export_all_to_pdf(plots),
+        file_name="expectancy_graphs.pdf",
+        mime="application/pdf"
+    )
