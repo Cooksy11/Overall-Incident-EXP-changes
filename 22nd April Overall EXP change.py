@@ -9,9 +9,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 import requests
 
 # Load and preprocess data from Google Sheets
-@st.cache_data
 def load_data():
-    url = "https://docs.google.com/spreadsheets/d/1hLvUlClvfpGHDPwZf2OzD228_GU7Cdo0E9BtAa4dZyk/export?format=csv"
+    url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTFcAq9JNJsfPhiPe3sdaEipD1jofgrCNozbcld55JzDguXCxVpFbM0KwKd5txhLh4FLlBvFy43WqAX/pub?output=csv"
     response = requests.get(url)
     response.raise_for_status()
     data = StringIO(response.text)
